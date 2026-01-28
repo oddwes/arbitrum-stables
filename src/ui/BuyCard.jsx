@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAccount, useConnect, useDisconnect } from 'wagmi'
 import { arbitrum } from 'wagmi/chains'
 import { ARBITRUM_STABLES } from '../data/arbitrumStables'
-import { fetchUsdPrice } from '../lib/coingecko'
+import { useCoinPrice } from '../lib/useCoinPrice'
 import { useWalletBalance } from '../web3/hooks/useWalletBalance'
 
 const LOGO_BY_SYMBOL = {
@@ -13,13 +13,21 @@ const LOGO_BY_SYMBOL = {
 }
 
 function clampInput(s) {
-  return s.replace(/[^\d.]/g, '').replace(/(\..*)\./g, '$1')
+  const cleaned = s.replace(/[^\d.]/g, '').replace(/(\..*)\./g, '$1')
+  const match = cleaned.match(/^\d*\.?\d{0,2}/)
+  return match ? match[0] : ''
 }
 
 function toNum(s) {
   if (!s) return null
   const n = Number(s)
   return Number.isFinite(n) ? n : null
+}
+
+function truncDisplay(s) {
+  const parts = s.split('.')
+  if (parts.length === 1) return s
+  return parts[0] + '.' + parts[1].slice(0, 2)
 }
 
 function fmt(n, max = 6) {
@@ -52,11 +60,12 @@ export function BuyCard() {
   const [coinMenuOpen, setCoinMenuOpen] = useState(false)
   const [usdInput, setUsdInput] = useState('')
   const [arbInput, setArbInput] = useState('0.01')
-  const [stableUsd, setStableUsd] = useState(null)
-  const [arbUsd, setArbUsd] = useState(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
   const pickerRef = useRef(null)
+
+  const { data: stableUsd, isLoading: stableLoading, error: stableError } = useCoinPrice(coin.id)
+  const { data: arbUsd, isLoading: arbLoading, error: arbError } = useCoinPrice('arbitrum')
+  const loading = stableLoading || arbLoading
+  const error = stableError?.message || arbError?.message || ''
 
   useEffect(() => {
     if (!coinMenuOpen) return
@@ -67,30 +76,6 @@ export function BuyCard() {
     document.addEventListener('click', onDoc, { capture: true })
     return () => document.removeEventListener('click', onDoc, { capture: true })
   }, [coinMenuOpen])
-
-  useEffect(() => {
-    const abort = new AbortController()
-    const load = async () => {
-      setLoading(true)
-      setError('')
-      try {
-        const [s, a] = await Promise.all([
-          fetchUsdPrice(coin.id, abort.signal),
-          fetchUsdPrice('arbitrum', abort.signal),
-        ])
-        setStableUsd(s)
-        setArbUsd(a)
-      } catch (e) {
-        if (e?.name !== 'AbortError') setError(e?.message || 'Failed to load price')
-        setStableUsd(null)
-        setArbUsd(null)
-      } finally {
-        setLoading(false)
-      }
-    }
-    load()
-    return () => abort.abort()
-  }, [coin])
 
   useEffect(() => {
     if (!arbUsd) return
@@ -223,7 +208,7 @@ export function BuyCard() {
               className="amountInput"
               inputMode="decimal"
               placeholder="0.00"
-              value={mode === 'usd' ? usdInput : arbInput}
+              value={mode === 'usd' ? truncDisplay(usdInput) : truncDisplay(arbInput)}
               aria-label="Buy amount"
               onChange={onInput}
             />
@@ -238,9 +223,7 @@ export function BuyCard() {
             {!loading && error ? <span className="err">{error}</span> : null}
             {!loading && !error ? (
               <span className="subtle">
-                {mode === 'usd'
-                  ? `≈ ${stableOut == null ? '—' : fmt(stableOut, 6)} ${coin.symbol}`
-                  : `≈ $${spendUsd == null ? '—' : fmt(spendUsd, 8)}`}
+                ≈ {stableOut == null ? '—' : fmt(stableOut, 6)} {coin.symbol}
               </span>
             ) : null}
           </div>
