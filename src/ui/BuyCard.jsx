@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAccount, useConnect, useDisconnect } from 'wagmi'
+import { arbitrum } from 'wagmi/chains'
 import { ARBITRUM_STABLES } from '../data/arbitrumStables'
 import { fetchUsdPrice } from '../lib/coingecko'
 
@@ -26,6 +27,11 @@ function fmt(n, max = 6) {
 
 function shortAddr(a) {
   return a ? `${a.slice(0, 6)}…${a.slice(-4)}` : ''
+}
+
+function shouldAutoConnectUnicornFromUrl() {
+  const params = new URLSearchParams(window.location.search)
+  return params.get('walletId') === 'inApp' && !!params.get('authCookie')
 }
 
 export function BuyCard() {
@@ -131,6 +137,14 @@ export function BuyCard() {
     if (arbUsd) setUsdInput(String(Number(v) * arbUsd))
   }
 
+  const onConnect = () => {
+    const injected = connectors.find((c) => c.id === 'injected') ?? connectors[0]
+    const unicorn = connectors.find((c) => c.id === 'unicorn')
+    const connector = shouldAutoConnectUnicornFromUrl() && unicorn ? unicorn : injected
+    if (!connector) return
+    connect({ connector, chainId: arbitrum.id })
+  }
+
   return (
     <div className="card">
       <div className="cardHead">
@@ -148,18 +162,9 @@ export function BuyCard() {
                 Disconnect
               </button>
             ) : (
-              connectors.map((c) => (
-                <button
-                  key={c.id}
-                  className="chip"
-                  type="button"
-                  disabled={!c.ready || isConnecting}
-                  onClick={() => connect({ connector: c })}
-                  title={!c.ready ? 'Unavailable' : c.name}
-                >
-                  {isConnecting ? 'Connecting…' : `Connect ${c.name}`}
-                </button>
-              ))
+              <button className="chip" type="button" disabled={isConnecting} onClick={onConnect}>
+                {isConnecting ? 'Connecting…' : 'Connect'}
+              </button>
             )}
           </div>
           {!isConnected && connectError ? <div className="err">{connectError.message}</div> : null}
