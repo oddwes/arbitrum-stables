@@ -56,10 +56,10 @@ export function BuyCard() {
 
   const coins = ARBITRUM_STABLES
   const [coin, setCoin] = useState(coins[0])
-  const [mode, setMode] = useState('arb') // 'usd' | 'arb'
+  const [mode, setMode] = useState('usd') // 'usd' | 'arb'
   const [coinMenuOpen, setCoinMenuOpen] = useState(false)
-  const [usdInput, setUsdInput] = useState('')
-  const [arbInput, setArbInput] = useState('0.01')
+  const [usdInput, setUsdInput] = useState('5')
+  const [arbInput, setArbInput] = useState('')
   const pickerRef = useRef(null)
 
   const { data: stableUsd, isLoading: stableLoading, error: stableError } = useCoinPrice(coin.id)
