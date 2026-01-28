@@ -264,7 +264,7 @@ export function BuyCard() {
           <div className="right">ARB</div>
         </div>
 
-        <button className="buyBtn" type="button" disabled={!canBuy}>
+        <button className="buyBtn" type="button" disabled={!isConnected || !canBuy}>
           Buy
         </button>
 
