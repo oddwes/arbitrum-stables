@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useAccount, useConnect, useDisconnect } from 'wagmi'
 import { ARBITRUM_STABLES } from '../data/arbitrumStables'
 import { fetchUsdPrice } from '../lib/coingecko'
 
@@ -23,7 +24,15 @@ function fmt(n, max = 6) {
   return n.toLocaleString(undefined, { maximumFractionDigits: max })
 }
 
+function shortAddr(a) {
+  return a ? `${a.slice(0, 6)}…${a.slice(-4)}` : ''
+}
+
 export function BuyCard() {
+  const { address, isConnected } = useAccount()
+  const { connect, connectors, isPending: isConnecting, error: connectError } = useConnect()
+  const { disconnect } = useDisconnect()
+
   const coins = ARBITRUM_STABLES
   const [coin, setCoin] = useState(coins[0])
   const [mode, setMode] = useState('arb') // 'usd' | 'arb'
@@ -129,8 +138,31 @@ export function BuyCard() {
           <div className="title">Get {coin.symbol}</div>
           <div className="subtle">Buy on Arbitrum</div>
         </div>
-        <div className="addrChip" title="placeholder address">
-          0x8165…A97A
+        <div style={{ display: 'grid', gap: 8, justifyItems: 'end' }}>
+          <div className="addrChip" title={isConnected ? address : 'Not connected'}>
+            {isConnected ? shortAddr(address) : 'Not connected'}
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            {isConnected ? (
+              <button className="chip" type="button" onClick={() => disconnect()}>
+                Disconnect
+              </button>
+            ) : (
+              connectors.map((c) => (
+                <button
+                  key={c.id}
+                  className="chip"
+                  type="button"
+                  disabled={!c.ready || isConnecting}
+                  onClick={() => connect({ connector: c })}
+                  title={!c.ready ? 'Unavailable' : c.name}
+                >
+                  {isConnecting ? 'Connecting…' : `Connect ${c.name}`}
+                </button>
+              ))
+            )}
+          </div>
+          {!isConnected && connectError ? <div className="err">{connectError.message}</div> : null}
         </div>
       </div>
 
@@ -238,4 +270,3 @@ export function BuyCard() {
     </div>
   )
 }
-
