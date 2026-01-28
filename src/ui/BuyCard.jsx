@@ -3,6 +3,7 @@ import { useAccount, useConnect, useDisconnect } from 'wagmi'
 import { arbitrum } from 'wagmi/chains'
 import { ARBITRUM_STABLES } from '../data/arbitrumStables'
 import { fetchUsdPrice } from '../lib/coingecko'
+import { useWalletBalance } from '../web3/hooks/useWalletBalance'
 
 const LOGO_BY_SYMBOL = {
   USDC: '/usdc-logo.svg',
@@ -38,6 +39,12 @@ export function BuyCard() {
   const { address, isConnected } = useAccount()
   const { connect, connectors, isPending: isConnecting, error: connectError } = useConnect()
   const { disconnect } = useDisconnect()
+
+  const ARB_TOKEN = useMemo(
+    () => '0x912CE59144191C1204E64559FE8253a0e49E6548',
+    [],
+  )
+  const { data: arbBalance, isLoading: balancesLoading } = useWalletBalance({ address, tokenAddress: ARB_TOKEN })
 
   const coins = ARBITRUM_STABLES
   const [coin, setCoin] = useState(coins[0])
@@ -261,7 +268,10 @@ export function BuyCard() {
 
         <div className="row">
           <div className="subtle">Current Balance</div>
-          <div className="right">ARB</div>
+          <div className="right">
+            {!isConnected ? '—' : balancesLoading ? '…' : `${arbBalance?.displayValue ?? '—'} ${arbBalance?.symbol ?? 'ARB'}`
+            }
+          </div>
         </div>
 
         <button className="buyBtn" type="button" disabled={!isConnected || !canBuy}>
