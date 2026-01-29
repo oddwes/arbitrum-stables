@@ -1,15 +1,81 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useAccount, useConnect, useDisconnect } from 'wagmi'
+import { useAccount, useConnect, useDisconnect, useWalletClient } from 'wagmi'
 import { arbitrum } from 'wagmi/chains'
 import { ARBITRUM_STABLES } from '../data/arbitrumStables'
 import { useCoinPrice } from '../lib/useCoinPrice'
 import { useWalletBalance } from '../web3/hooks/useWalletBalance'
+import { Bridge, prepareTransaction, sendAndConfirmTransaction } from 'thirdweb'
+import { defineChain } from 'thirdweb/chains'
+import { viemAdapter } from 'thirdweb/adapters/viem'
+import { parseUnits } from 'viem'
+import { thirdwebClient } from '../web3/thirdwebClient'
 
 const LOGO_BY_SYMBOL = {
   USDC: '/usdc-logo.svg',
   USDT: '/usdt-logo.svg',
   DAI: '/dai-logo.svg',
   FRAX: '/frax-logo.svg',
+}
+
+async function executeSwap(quote, client, account, onTxConfirmed) {
+  for (const step of quote.steps || []) {
+    for (const transaction of step.transactions || []) {
+      const prepared = prepareTransaction({
+        client,
+        chain: defineChain(transaction.chainId),
+        to: transaction.to,
+        data: transaction.data || '0x',
+        value: transaction.value ? BigInt(transaction.value) : undefined,
+        gas: transaction.gas ? BigInt(transaction.gas) : undefined,
+        maxFeePerGas: transaction.maxFeePerGas ? BigInt(transaction.maxFeePerGas) : undefined,
+        maxPriorityFeePerGas: transaction.maxPriorityFeePerGas ? BigInt(transaction.maxPriorityFeePerGas) : undefined,
+      })
+
+      const result = await sendAndConfirmTransaction({
+        transaction: prepared,
+        account,
+      })
+      onTxConfirmed?.()
+
+      if (['buy', 'sell', 'transfer'].includes(transaction.action)) {
+        let attempts = 0
+        const maxAttempts = 200
+        let completed = false
+
+        while (attempts < maxAttempts) {
+          try {
+            const status = await Bridge.status({
+              transactionHash: result.transactionHash,
+              chainId: transaction.chainId,
+              client,
+            })
+
+            if (status.status === 'COMPLETED') {
+              completed = true
+              break
+            }
+
+            if (status.status === 'FAILED') {
+              throw new Error('Cross-chain transaction failed')
+            }
+
+            await new Promise((resolve) => setTimeout(resolve, 3000))
+            attempts++
+          } catch (error) {
+            attempts++
+            if (attempts >= maxAttempts) {
+              throw error
+            }
+            await new Promise((resolve) => setTimeout(resolve, 3000))
+          }
+        }
+
+        if (!completed && attempts >= maxAttempts) {
+          throw new Error('Transaction timeout - please check status manually')
+        }
+      }
+    }
+  }
 }
 
 function clampInput(s) {
@@ -47,6 +113,7 @@ export function BuyCard() {
   const { address, isConnected } = useAccount()
   const { connect, connectors, isPending: isConnecting, error: connectError } = useConnect()
   const { disconnect } = useDisconnect()
+  const { data: walletClient } = useWalletClient()
 
   const ARB_TOKEN = useMemo(
     () => '0x912CE59144191C1204E64559FE8253a0e49E6548',
@@ -60,7 +127,22 @@ export function BuyCard() {
   const [coinMenuOpen, setCoinMenuOpen] = useState(false)
   const [usdInput, setUsdInput] = useState('5')
   const [arbInput, setArbInput] = useState('')
+  const [isBuying, setIsBuying] = useState(false)
+  const [buyError, setBuyError] = useState('')
+  const [showConfirm, setShowConfirm] = useState(false)
+  const [buyComplete, setBuyComplete] = useState(false)
+  const [buyDurationMs, setBuyDurationMs] = useState(8000)
+  const [showProgress, setShowProgress] = useState(false)
+  const [progressKey, setProgressKey] = useState(0)
   const pickerRef = useRef(null)
+  const account = useMemo(() => {
+    if (!walletClient) return null
+    try {
+      return viemAdapter.walletClient.fromViem({ walletClient })
+    } catch {
+      return null
+    }
+  }, [walletClient])
 
   const { data: stableUsd, isLoading: stableLoading, error: stableError } = useCoinPrice(coin.id)
   const { data: arbUsd, isLoading: arbLoading, error: arbError } = useCoinPrice('arbitrum')
@@ -101,10 +183,22 @@ export function BuyCard() {
     return spendUsd / stableUsd
   }, [spendUsd, stableUsd])
 
-  const canBuy = useMemo(() => {
-    const a = mode === 'arb' ? toNum(arbInput) : (arbUsd ? (toNum(usdInput) ?? 0) / arbUsd : null)
-    return typeof a === 'number' && a > 0 && Number.isFinite(a)
+  const arbSpend = useMemo(() => {
+    return mode === 'arb' ? toNum(arbInput) : (arbUsd ? (toNum(usdInput) ?? 0) / arbUsd : null)
   }, [mode, arbInput, usdInput, arbUsd])
+
+  const arbBalanceNum = useMemo(() => {
+    const v = arbBalance?.displayValue
+    return v ? toNum(String(v)) : null
+  }, [arbBalance])
+
+  const insufficientBalance = useMemo(() => {
+    return arbSpend != null && arbBalanceNum != null && arbSpend > arbBalanceNum
+  }, [arbSpend, arbBalanceNum])
+
+  const canBuy = useMemo(() => {
+    return typeof arbSpend === 'number' && arbSpend > 0 && Number.isFinite(arbSpend) && !insufficientBalance && !!account && !!thirdwebClient
+  }, [arbSpend, insufficientBalance, account])
 
   const logoSrc = LOGO_BY_SYMBOL[coin.symbol] ?? ''
 
@@ -137,6 +231,61 @@ export function BuyCard() {
     connect({ connector, chainId: arbitrum.id })
   }
 
+  const startBuy = () => {
+    setBuyError('')
+    setShowConfirm(true)
+  }
+
+  const confirmBuy = async () => {
+    if (!thirdwebClient) {
+      setBuyError('Missing thirdweb client')
+      return
+    }
+    if (!account) {
+      setBuyError('Wallet not connected')
+      return
+    }
+
+    const amount = arbInput.trim()
+    if (!amount) return
+
+    setBuyError('')
+    setIsBuying(true)
+    setShowProgress(false)
+    setProgressKey((k) => k + 1)
+
+    try {
+      const quote = await Bridge.Sell.prepare({
+        originChainId: arbitrum.id,
+        originTokenAddress: ARB_TOKEN,
+        destinationChainId: arbitrum.id,
+        destinationTokenAddress: coin.address,
+        amount: parseUnits(amount, 18),
+        sender: account.address,
+        receiver: account.address,
+        client: thirdwebClient,
+      })
+
+      setBuyDurationMs(quote?.estimatedExecutionTimeMs || 8000)
+      await executeSwap(quote, thirdwebClient, account, () => {
+        setShowProgress(true)
+        setProgressKey((k) => k + 1)
+      })
+      setBuyComplete(true)
+      setTimeout(() => {
+        setBuyComplete(false)
+        setShowConfirm(false)
+      }, 2000)
+    } catch (err) {
+      setBuyError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setIsBuying(false)
+    }
+  }
+
+  const arbAmount = arbSpend
+  const stableAmount = stableOut == null ? null : stableOut
+
   return (
     <div className="card">
       <div className="cardHead">
@@ -164,7 +313,101 @@ export function BuyCard() {
       </div>
 
       <div className="panel">
-        <div className="coinRow">
+        {showConfirm ? (
+          <div style={{ display: 'grid', gap: 16 }}>
+            <style>{`@keyframes buy-progress { from { transform: translateX(-100%); } to { transform: translateX(0%); } }`}</style>
+            <div className="" style={{ display: 'grid', gap: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <div className="coinIcon">
+                    <img className="coinLogo" src="/arbitrum-logo.svg" alt="ARB logo" />
+                  </div>
+                  <div>
+                    <div className="coinSym">ARB</div>
+                    <div className="subtle">Arbitrum</div>
+                  </div>
+                </div>
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ fontSize: 22, fontWeight: 700 }}>{arbAmount == null ? '—' : fmt(arbAmount, 6)}</div>
+                  <div className="subtle">~${spendUsd == null ? '—' : fmt(spendUsd, 2)}</div>
+                </div>
+              </div>
+              <div style={{ textAlign: 'center', fontSize: 18 }}>↓</div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <div className="coinIcon">
+                    {logoSrc ? <img className="coinLogo" src={logoSrc} alt={`${coin.symbol} logo`} /> : coin.symbol.slice(0, 1)}
+                  </div>
+                  <div>
+                    <div className="coinSym">{coin.symbol}</div>
+                    <div className="subtle">Arbitrum One</div>
+                  </div>
+                </div>
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ fontSize: 22, fontWeight: 700 }}>{stableAmount == null ? '—' : fmt(stableAmount, 6)}</div>
+                  <div className="subtle">~${spendUsd == null ? '—' : fmt(spendUsd, 2)}</div>
+                </div>
+              </div>
+            </div>
+
+            <div className="row" style={{ paddingLeft: 12 }}>
+              <div className="subtle">Wallet used</div>
+              <div className="right">{isConnected ? shortAddr(address) : '—'}</div>
+            </div>
+            {buyComplete ? (
+              <div style={{ textAlign: 'center', fontWeight: 600, padding: '8px 0' }}>Buy Complete</div>
+            ) : (
+              <div style={{ display: 'flex', gap: 12 }}>
+                <button
+                  className="buyBtn"
+                  type="button"
+                  style={{ flex: 1, background: '#fff', color: '#111', border: '1px solid #e5e7eb' }}
+                  disabled={isBuying}
+                  onClick={() => {
+                    setBuyError('')
+                    setShowConfirm(false)
+                  }}
+                >
+                  Cancel
+                </button>
+                <button className="buyBtn" type="button" style={{ flex: 1 }} disabled={!canBuy || isBuying} onClick={confirmBuy}>
+                  {isBuying ? 'Buying…' : 'Confirm'}
+                </button>
+              </div>
+            )}
+            {insufficientBalance ? (
+              <div className="err" style={{ textAlign: 'center', paddingTop: 8, maxWidth: '100%' }}>
+                Insufficient ARB balance
+              </div>
+            ) : null}
+            {!insufficientBalance && buyError ? (
+              <div
+                className="err"
+                style={{
+                  textAlign: 'center',
+                  paddingTop: 8,
+                  maxWidth: '100%',
+                  wordBreak: 'break-word',
+                  whiteSpace: 'pre-wrap',
+                  fontSize: 12,
+                  lineHeight: 1.4,
+                }}
+              >
+                {buyError}
+              </div>
+            ) : null}
+            {isBuying && showProgress ? (
+              <div style={{ height: 4, background: '#e5e7eb', borderRadius: 999, overflow: 'hidden', marginTop: 8 }}>
+                <div
+                  key={progressKey}
+                  style={{ height: '100%', width: '100%', background: '#3b82f6', animation: `buy-progress ${buyDurationMs}ms linear` }}
+                />
+              </div>
+            ) : null}
+          </div>
+        ) : (
+        <div>
+          <div className="coinRow">
           <div className="coinIcon">
             {logoSrc ? <img className="coinLogo" src={logoSrc} alt={`${coin.symbol} logo`} /> : coin.symbol.slice(0, 1)}
           </div>
@@ -257,13 +500,17 @@ export function BuyCard() {
           </div>
         </div>
 
-        <button className="buyBtn" type="button" disabled={!isConnected || !canBuy}>
-          Buy
+        <button className="buyBtn" type="button" disabled={!isConnected || !canBuy || isBuying} onClick={startBuy}>
+          {isBuying ? 'Buying…' : 'Buy'}
         </button>
+        {insufficientBalance ? <div className="err" style={{ textAlign: 'center', paddingTop: 8 }}>Insufficient ARB balance</div> : null}
+        {!insufficientBalance && buyError ? <div className="err" style={{ textAlign: 'center', paddingTop: 8 }}>{buyError}</div> : null}
 
         <div className="priceLine subtle">
           {stableUsd && arbUsd ? `1 ARB ≈ $${fmt(arbUsd, 8)} · 1 ${coin.symbol} ≈ $${fmt(stableUsd, 8)}` : ''}
         </div>
+        </div>
+        )}
       </div>
     </div>
   )
