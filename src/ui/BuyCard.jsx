@@ -266,7 +266,7 @@ export function BuyCard() {
         client: thirdwebClient,
       })
 
-      setBuyDurationMs(quote?.estimatedExecutionTimeMs || 8000)
+      setBuyDurationMs((quote?.estimatedExecutionTimeMs || 8000) * 2)
       await executeSwap(quote, thirdwebClient, account, () => {
         setShowProgress(true)
         setProgressKey((k) => k + 1)
@@ -299,7 +299,7 @@ export function BuyCard() {
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             {isConnected ? (
-              <button className="chip" type="button" onClick={() => disconnect()}>
+              <button className="chip" type="button" disabled={isBuying} onClick={() => disconnect()}>
                 Disconnect
               </button>
             ) : (
@@ -355,7 +355,7 @@ export function BuyCard() {
               <div className="right">{isConnected ? shortAddr(address) : '—'}</div>
             </div>
             {buyComplete ? (
-              <div style={{ textAlign: 'center', fontWeight: 600, padding: '8px 0' }}>Buy Complete</div>
+              <div style={{ textAlign: 'center', fontWeight: 600, padding: '12px 24px', border: '2px solid #22c55e', borderRadius: 999, background: '#f0fdf4', color: '#22c55e' }}>Buy Complete</div>
             ) : (
               <div style={{ display: 'flex', gap: 12 }}>
                 <button
